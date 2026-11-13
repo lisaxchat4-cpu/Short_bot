@@ -1,54 +1,47 @@
 import logging
-import time
-import cloudscraper
+import requests
 from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-def resolve_links(url):
-    scraper = cloudscraper.create_scraper(allow_brotli=False)
+def resolve_link(url):
+    session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
         "Referer": "https://www.google.com/"
     }
     
     try:
-        # --- STEP 1: Bypass VIPShort ---
-        print(f"[*] Opening VIPShort link: {url}")
-        res = scraper.get(url, headers=headers, allow_redirects=True, timeout=15)
-        intermediate_url = res.url
-        print(f"[*] Intermediate Blog URL: {intermediate_url}")
+        print(f"[*] Fetching: {url}")
+        # Disable automatic redirects to capture intermediate header locations manually
+        response = session.get(url, headers=headers, allow_redirects=False, timeout=15)
         
-        # Give a small pause for simulation
-        time.sleep(5)
-        
-        # --- STEP 2: Fetch Intermediate Blog Page ---
-        print(f"[*] Fetching blog page content...")
-        blog_res = scraper.get(intermediate_url, headers=headers, allow_redirects=True, timeout=15)
-        soup = BeautifulSoup(blog_res.text, 'html.parser')
-        
-        # Check for form action
-        form = soup.find('form')
-        if form and form.get('action'):
-            action_url = form.get('action')
-            if not action_url.startswith('http'):
-                base = "https://" + intermediate_url.split('/')[2]
-                action_url = base + action_url if action_url.startswith('/') else base + '/' + action_url
-            return f"[+] Final Destination (Form Action):\n{action_url}"
+        # Check if there's a Location header (direct redirect)
+        if 'Location' in response.headers:
+            target = response.headers['Location']
+            print(f"[*] Found direct redirect: {target}")
+            return f"[+] Target Link:\n{target}"
             
-        # Search all external links on the blog page
+        # If response is normal, parse with BeautifulSoup to look for window.location or meta refresh
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Check script tags for window.location redirects
+        for script in soup.find_all('script'):
+            if script.string and 'window.location' in script.string:
+                print(f"[*] Found JS redirect script")
+                # Extract URL from script if possible
+                
+        # Fallback: check all links
         for a in soup.find_all('a', href=True):
             href = a['href']
-            if href.startswith('http') and not any(x in href for x in ['vipshort', 'hindumantra', 'geniousguide', 'google', 'cloudflare', 'javascript', '#', 'facebook', 'telegram']):
-                return f"[+] Final Destination Link:\n{href}"
+            if href.startswith('http') and 'vipshort' not in href and 'google' not in href:
+                return f"[+] Extracted Link:\n{href}"
                 
-        # Fallback if blog URL itself changed externally
-        if "hindumantra" not in intermediate_url and "vipshort" not in intermediate_url:
-            return f"[+] Final Destination Link:\n{intermediate_url}"
-            
-        return f"[-] Blog page reached, but couldn't extract final link. URL: {intermediate_url}"
+        return f"[-] Blocked or protected by Cloudflare/JS. URL: {url}"
         
     except Exception as e:
         return f"[-] Error: {str(e)}"
@@ -56,8 +49,8 @@ def resolve_links(url):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     if "http://" in user_text or "https://" in user_text:
-        await update.message.reply_text("[*] Processing multi-step short link...")
-        result = resolve_links(user_text)
+        await update.message.reply_text("[*] Tracing redirect headers...")
+        result = resolve_link(user_text)
         await update.message.reply_text(result)
     else:
         await update.message.reply_text("Bhai, valid short link bhej!")
@@ -66,5 +59,6 @@ if __name__ == '__main__':
     BOT_TOKEN = "9098391736:AAF8JTbu0pDoEj8NkENlQ-zm_6EhEzWnYq8"
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("[+] Two-Step Resolver Bot is running...")
+    print("[+] Header Tracer Bot is running...")
     application.run_polling()
+    
